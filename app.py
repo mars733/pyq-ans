@@ -53,15 +53,24 @@ st.set_page_config(page_title="Exam Solver AI", page_icon="🎓")
 st.title("🎓 Smart Exam Solver AI")
 st.markdown("Upload your exam PDF/Text, pick your questions, and get AI-generated answers with custom lengths.")
 
-# API Key in Sidebar
+# API Key and Model in Sidebar
 api_key = st.sidebar.text_input("Enter Gemini API Key", type="password")
+model_options = [
+    "gemini-2.5-flash", 
+    "gemini-2.0-flash", 
+    "gemini-1.5-flash", 
+    "gemini-1.5-pro",
+    "gemini-3.5-flash",
+    "gemini-3.1-flash-lite"
+]
+MODEL_ID = st.sidebar.selectbox("Select Model", model_options, index=0)
+
 if not api_key:
     st.info("Please enter your Gemini API Key in the sidebar to start. You can get one for free at https://aistudio.google.com/")
     st.stop()
 
 # Initialize Client
 client = setup_gemini(api_key)
-MODEL_ID = "gemini-2.5-flash"
 
 uploaded_file = st.file_uploader("Upload Exam Paper (PDF or TXT)", type=["pdf", "txt"])
 
@@ -103,18 +112,29 @@ if uploaded_file:
                 st.stop()
 
     st.subheader("📋 Select Questions to Answer")
-    selected_questions = []
     
     if "questions" in st.session_state:
+        # Copy All Questions
+        all_q_text = "\n".join(st.session_state.questions)
+        st.download_button("📋 Copy All Questions (Download txt)", all_q_text, file_name="questions.txt")
+        
+        col_mode, col_len = st.columns([1, 1])
+        with col_mode:
+            process_mode = st.radio("Processing Mode", ["One by One (Accurate)", "Batch (Fast/Save Quota)"], index=0)
+        with col_len:
+            global_length = st.selectbox("Global Length (for Batch/All)", ["50", "100", "150", "200", "250", "300", "400", "500", "800"], index=3)
+
+        selected_questions = []
+        word_count_options = ["50", "100", "150", "200", "250", "300", "400", "500", "800"]
+        
         for i, q in enumerate(st.session_state.questions):
-            # Filter for actual questions (Gemini might add commentary)
             if len(q) < 5: continue
             
             col1, col2 = st.columns([4, 1])
             with col1:
                 is_selected = st.checkbox(q, key=f"q_{i}")
             with col2:
-                length = st.selectbox("Length", ["Short (50w)", "Medium (200w)", "Long (500w)", "Essay (800w)"], key=f"len_{i}", index=1)
+                length = st.selectbox("Words", word_count_options, key=f"len_{i}", index=3)
             
             if is_selected:
                 selected_questions.append({"question": q, "length": length})
@@ -123,16 +143,39 @@ if uploaded_file:
         st.divider()
         with st.spinner("Thinking..."):
             results = []
-            for item in selected_questions:
-                q_prompt = f"Provide a high-quality, exam-standard answer for this question: '{item['question']}'. The answer MUST be approximately {item['length']}. Use clear headings and bullet points where appropriate."
+            
+            if process_mode == "One by One (Accurate)":
+                for item in selected_questions:
+                    q_prompt = f"Provide a high-quality, exam-standard answer for this question: '{item['question']}'. The answer MUST be approximately {item['length']} words. Use clear headings and bullet points where appropriate."
+                    try:
+                        response = client.models.generate_content(model=MODEL_ID, contents=q_prompt)
+                        ans_text = response.text
+                        results.append(f"## {item['question']}\n\n{ans_text}\n\n")
+                        st.markdown(f"## {item['question']}")
+                        st.code(ans_text, language="markdown") # Easy to copy
+                        st.divider()
+                    except Exception as e:
+                        st.error(f"Error generating answer for '{item['question']}': {e}")
+            else:
+                # Batch Processing
+                batch_q = "\n".join([f"- Question: {item['question']} | Requested Length: {item['length']} words" for item in selected_questions])
+                batch_prompt = (
+                    f"You are an expert examiner. Provide high-quality, exam-standard answers for the following questions. "
+                    f"For each question, adhere strictly to the requested word count. "
+                    f"Use clear Markdown headers (##) for each question.\n\n"
+                    f"QUESTIONS TO ANSWER:\n{batch_q}"
+                )
                 try:
-                    response = client.models.generate_content(model=MODEL_ID, contents=q_prompt)
-                    results.append(f"## {item['question']}\n\n{response.text}\n\n")
-                    st.markdown(f"## {item['question']}")
-                    st.markdown(response.text)
+                    response = client.models.generate_content(model=MODEL_ID, contents=batch_prompt)
+                    ans_text = response.text
+                    st.markdown("### 📝 Generated Answers (Batch)")
+                    st.markdown(ans_text)
                     st.divider()
+                    st.subheader("📋 Copy Batch Result")
+                    st.code(ans_text, language="markdown") 
+                    results.append(ans_text)
                 except Exception as e:
-                    st.error(f"Error generating answer for '{item['question']}': {e}")
+                    st.error(f"Batch Error: {e}")
             
             if results:
                 final_output = "\n".join(results)
