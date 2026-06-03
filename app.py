@@ -109,22 +109,23 @@ if uploaded_file:
     if "questions" not in st.session_state or st.button("🔄 Re-scan for Questions"):
         with st.spinner("Extracting questions from text..."):
             prompt = (
-                f"Analyze the following exam text and extract all questions in a structured format. "
-                f"Identify the Section/Part headings. Group sub-questions under their parent questions. "
-                f"Return ONLY a JSON list of objects with this structure: "
-                f"[{{'section': 'Section Name', 'questions': [{{'id': 1, 'text': 'Question text', 'sub_questions': ['sub1', 'sub2']}}]}}].\n\n"
+                f"Analyze this exam text. Group questions by their Section/Part headings.\n"
+                f"RULES:\n"
+                f"1. A 'question' must be an actual inquiry or task (e.g., 'What is...', 'Explain...', '1. Who...').\n"
+                f"2. Instruction text like 'Answer any four' or 'Choose the correct option' should NOT be listed as a question, but can be part of the Section name.\n"
+                f"3. Group sub-parts (like (i), (a), (b)) inside the parent question.\n"
+                f"Return ONLY a JSON list: [{{'section': 'Part A', 'questions': [{{'id': 1, 'text': 'Main Q', 'sub_questions': ['sub1']}}]}}].\n\n"
                 f"TEXT:\n{text}"
             )
             try:
                 response = client.models.generate_content(model=MODEL_ID, contents=prompt)
-                # Clean JSON response (Gemini sometimes adds markdown blocks)
                 json_match = re.search(r"\[.*\]", response.text, re.DOTALL)
                 if json_match:
                     import json
                     st.session_state.questions = json.loads(json_match.group())
                 else:
-                    # Fallback to simple list if JSON fails
-                    st.session_state.questions = [{"section": "General", "questions": [{"id": i, "text": q} for i, q in enumerate(response.text.split('\n')) if q.strip()]}]
+                    lines = [l.strip() for l in response.text.split('\n') if len(l.strip()) > 5]
+                    st.session_state.questions = [{"section": "Unsorted", "questions": [{"id": i, "text": q, "sub_questions": []} for i, q in enumerate(lines)]}]
             except Exception as e:
                 st.error(f"AI Error: {e}")
                 st.stop()
@@ -132,16 +133,27 @@ if uploaded_file:
     st.subheader("📋 Select Questions to Answer")
     
     if "questions" in st.session_state:
+        # Restoration of Copy Button
+        q_copy_list = []
+        for sec in st.session_state.questions:
+            q_copy_list.append(f"--- {sec.get('section', 'Section')} ---")
+            for q in sec.get('questions', []):
+                q_copy_list.append(q.get('text', ''))
+                for sub in q.get('sub_questions', []):
+                    q_copy_list.append(f"  - {sub}")
+        
+        st.download_button("📋 Copy All Questions (Download txt)", "\n".join(q_copy_list), file_name="questions.txt")
+
         # Global controls
         col_ctrl1, col_ctrl2 = st.columns([1, 1])
         with col_ctrl1:
             if st.button("✅ Select All Questions"):
                 for section in st.session_state.questions:
-                    for q in section['questions']:
+                    for q in section.get('questions', []):
                         st.session_state[f"q_check_{section['section']}_{q['id']}"] = True
             if st.button("❌ Deselect All"):
                 for section in st.session_state.questions:
-                    for q in section['questions']:
+                    for q in section.get('questions', []):
                         st.session_state[f"q_check_{section['section']}_{q['id']}"] = False
 
         process_mode = st.radio("Processing Mode", ["One by One (Accurate)", "Batch (Fast/Save Quota)"], index=0)
@@ -151,17 +163,20 @@ if uploaded_file:
         word_count_options = ["50", "100", "150", "200", "250", "300", "400", "500", "800"]
         
         for section in st.session_state.questions:
-            with st.expander(f"📂 {section['section']}", expanded=True):
+            if not isinstance(section, dict): continue
+            
+            with st.expander(f"📂 {section.get('section', 'Part')}", expanded=True):
                 # Section-level select
-                if st.button(f"Select all in {section['section']}", key=f"btn_{section['section']}"):
-                    for q in section['questions']:
+                if st.button(f"Select all in {section.get('section', 'this part')}", key=f"btn_{section.get('section', '')}"):
+                    for q in section.get('questions', []):
                         st.session_state[f"q_check_{section['section']}_{q['id']}"] = True
                 
-                for q in section['questions']:
+                for q in section.get('questions', []):
                     q_id = f"q_check_{section['section']}_{q['id']}"
                     col1, col2 = st.columns([4, 1])
                     with col1:
-                        is_selected = st.checkbox(q['text'], key=q_id)
+                        # Ensure default is False if key missing
+                        is_selected = st.checkbox(q.get('text', 'Question'), key=q_id, value=st.session_state.get(q_id, False))
                         if 'sub_questions' in q and q['sub_questions']:
                             for sub in q['sub_questions']:
                                 st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• _{sub}_")
