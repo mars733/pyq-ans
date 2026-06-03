@@ -1,8 +1,7 @@
 streamlit
-PyPDF2
 PyMuPDF
 easyocr
-google-generativeai
+google-genai
 opencv-python-headless
 numpy
 Pillow

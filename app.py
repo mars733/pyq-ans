@@ -2,25 +2,22 @@ import streamlit as st
 import os
 import io
 import re
-from PyPDF2 import PdfReader
 import fitz  # PyMuPDF
 import easyocr
-import google.generativeai as genai
+from google import genai
 import numpy as np
 from PIL import Image
 
 # Setup Gemini
 def setup_gemini(api_key):
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel('gemini-1.5-flash')
+    return genai.Client(api_key=api_key)
 
 def extract_text_digital(uploaded_file):
-    reader = PdfReader(uploaded_file)
+    pdf_bytes = uploaded_file.read()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     text = ""
-    for page in reader.pages:
-        extracted = page.extract_text()
-        if extracted:
-            text += extracted + "\n"
+    for page in doc:
+        text += page.get_text() + "\n"
     return text
 
 def extract_text_ocr(uploaded_file):
@@ -28,6 +25,8 @@ def extract_text_ocr(uploaded_file):
     Renders PDF pages as images and uses EasyOCR to extract text.
     """
     reader = easyocr.Reader(['en'])
+    # Ensure we are at the start of the file if it was read before
+    uploaded_file.seek(0)
     pdf_bytes = uploaded_file.read()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
@@ -60,7 +59,9 @@ if not api_key:
     st.info("Please enter your Gemini API Key in the sidebar to start. You can get one for free at https://aistudio.google.com/")
     st.stop()
 
-model = setup_gemini(api_key)
+# Initialize Client
+client = setup_gemini(api_key)
+MODEL_ID = "gemini-2.5-flash"
 
 uploaded_file = st.file_uploader("Upload Exam Paper (PDF or TXT)", type=["pdf", "txt"])
 
@@ -92,26 +93,31 @@ if uploaded_file:
     if "questions" not in st.session_state:
         with st.spinner("Extracting questions from text..."):
             prompt = f"Identify every individual question or prompt in the following exam text. List them as a numbered list. Include the section names if applicable.\n\nTEXT:\n{text}"
-            response = model.generate_content(prompt)
-            # Find lines that look like questions
-            q_list = [l.strip() for l in response.text.split('\n') if l.strip()]
-            st.session_state.questions = q_list
+            try:
+                response = client.models.generate_content(model=MODEL_ID, contents=prompt)
+                # Find lines that look like questions
+                q_list = [l.strip() for l in response.text.split('\n') if l.strip()]
+                st.session_state.questions = q_list
+            except Exception as e:
+                st.error(f"AI Error: {e}")
+                st.stop()
 
     st.subheader("📋 Select Questions to Answer")
     selected_questions = []
     
-    for i, q in enumerate(st.session_state.questions):
-        # Filter for actual questions (Gemini might add commentary)
-        if len(q) < 5: continue
-        
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            is_selected = st.checkbox(q, key=f"q_{i}")
-        with col2:
-            length = st.selectbox("Length", ["Short (50w)", "Medium (200w)", "Long (500w)", "Essay (800w)"], key=f"len_{i}", index=1)
-        
-        if is_selected:
-            selected_questions.append({"question": q, "length": length})
+    if "questions" in st.session_state:
+        for i, q in enumerate(st.session_state.questions):
+            # Filter for actual questions (Gemini might add commentary)
+            if len(q) < 5: continue
+            
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                is_selected = st.checkbox(q, key=f"q_{i}")
+            with col2:
+                length = st.selectbox("Length", ["Short (50w)", "Medium (200w)", "Long (500w)", "Essay (800w)"], key=f"len_{i}", index=1)
+            
+            if is_selected:
+                selected_questions.append({"question": q, "length": length})
 
     if st.button("🚀 Generate Detailed Answers") and selected_questions:
         st.divider()
@@ -119,16 +125,20 @@ if uploaded_file:
             results = []
             for item in selected_questions:
                 q_prompt = f"Provide a high-quality, exam-standard answer for this question: '{item['question']}'. The answer MUST be approximately {item['length']}. Use clear headings and bullet points where appropriate."
-                response = model.generate_content(q_prompt)
-                results.append(f"## {item['question']}\n\n{response.text}\n\n")
-                st.markdown(f"## {item['question']}")
-                st.markdown(response.text)
-                st.divider()
+                try:
+                    response = client.models.generate_content(model=MODEL_ID, contents=q_prompt)
+                    results.append(f"## {item['question']}\n\n{response.text}\n\n")
+                    st.markdown(f"## {item['question']}")
+                    st.markdown(response.text)
+                    st.divider()
+                except Exception as e:
+                    st.error(f"Error generating answer for '{item['question']}': {e}")
             
-            final_output = "\n".join(results)
-            st.download_button(
-                label="📥 Download Full Answer Sheet (.md)",
-                data=final_output,
-                file_name=f"answers_{uploaded_file.name}.md",
-                mime="text/markdown"
-            )
+            if results:
+                final_output = "\n".join(results)
+                st.download_button(
+                    label="📥 Download Full Answer Sheet (.md)",
+                    data=final_output,
+                    file_name=f"answers_{uploaded_file.name}.md",
+                    mime="text/markdown"
+                )
