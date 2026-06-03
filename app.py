@@ -108,45 +108,71 @@ if uploaded_file:
     # Step 1: Identify Questions
     if "questions" not in st.session_state or st.button("🔄 Re-scan for Questions"):
         with st.spinner("Extracting questions from text..."):
-            prompt = f"Identify every individual question or prompt in the following exam text. List them as a numbered list. Include the section names if applicable.\n\nTEXT:\n{text}"
+            prompt = (
+                f"Analyze the following exam text and extract all questions in a structured format. "
+                f"Identify the Section/Part headings. Group sub-questions under their parent questions. "
+                f"Return ONLY a JSON list of objects with this structure: "
+                f"[{{'section': 'Section Name', 'questions': [{{'id': 1, 'text': 'Question text', 'sub_questions': ['sub1', 'sub2']}}]}}].\n\n"
+                f"TEXT:\n{text}"
+            )
             try:
                 response = client.models.generate_content(model=MODEL_ID, contents=prompt)
-                # Find lines that look like questions
-                q_list = [l.strip() for l in response.text.split('\n') if l.strip()]
-                st.session_state.questions = q_list
+                # Clean JSON response (Gemini sometimes adds markdown blocks)
+                json_match = re.search(r"\[.*\]", response.text, re.DOTALL)
+                if json_match:
+                    import json
+                    st.session_state.questions = json.loads(json_match.group())
+                else:
+                    # Fallback to simple list if JSON fails
+                    st.session_state.questions = [{"section": "General", "questions": [{"id": i, "text": q} for i, q in enumerate(response.text.split('\n')) if q.strip()]}]
             except Exception as e:
                 st.error(f"AI Error: {e}")
-                if "500" in str(e) or "quota" in str(e).lower():
-                    st.warning("💡 **Tip:** It looks like this model is busy or out of quota. Try selecting a different model from the sidebar (e.g., Gemini 3.5 or 1.5).")
                 st.stop()
 
     st.subheader("📋 Select Questions to Answer")
     
     if "questions" in st.session_state:
-        # Copy All Questions
-        all_q_text = "\n".join(st.session_state.questions)
-        st.download_button("📋 Copy All Questions (Download txt)", all_q_text, file_name="questions.txt")
-        
-        col_mode, col_len = st.columns([1, 1])
-        with col_mode:
-            process_mode = st.radio("Processing Mode", ["One by One (Accurate)", "Batch (Fast/Save Quota)"], index=0)
-        with col_len:
-            global_length = st.selectbox("Global Length (for Batch/All)", ["50", "100", "150", "200", "250", "300", "400", "500", "800"], index=3)
+        # Global controls
+        col_ctrl1, col_ctrl2 = st.columns([1, 1])
+        with col_ctrl1:
+            if st.button("✅ Select All Questions"):
+                for section in st.session_state.questions:
+                    for q in section['questions']:
+                        st.session_state[f"q_check_{section['section']}_{q['id']}"] = True
+            if st.button("❌ Deselect All"):
+                for section in st.session_state.questions:
+                    for q in section['questions']:
+                        st.session_state[f"q_check_{section['section']}_{q['id']}"] = False
+
+        process_mode = st.radio("Processing Mode", ["One by One (Accurate)", "Batch (Fast/Save Quota)"], index=0)
+        global_length = st.selectbox("Default Length", ["50", "100", "150", "200", "250", "300", "400", "500", "800"], index=3)
 
         selected_questions = []
         word_count_options = ["50", "100", "150", "200", "250", "300", "400", "500", "800"]
         
-        for i, q in enumerate(st.session_state.questions):
-            if len(q) < 5: continue
-            
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                is_selected = st.checkbox(q, key=f"q_{i}")
-            with col2:
-                length = st.selectbox("Words", word_count_options, key=f"len_{i}", index=3)
-            
-            if is_selected:
-                selected_questions.append({"question": q, "length": length})
+        for section in st.session_state.questions:
+            with st.expander(f"📂 {section['section']}", expanded=True):
+                # Section-level select
+                if st.button(f"Select all in {section['section']}", key=f"btn_{section['section']}"):
+                    for q in section['questions']:
+                        st.session_state[f"q_check_{section['section']}_{q['id']}"] = True
+                
+                for q in section['questions']:
+                    q_id = f"q_check_{section['section']}_{q['id']}"
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        is_selected = st.checkbox(q['text'], key=q_id)
+                        if 'sub_questions' in q and q['sub_questions']:
+                            for sub in q['sub_questions']:
+                                st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;• _{sub}_")
+                    with col2:
+                        length = st.selectbox("Words", word_count_options, key=f"len_{section['section']}_{q['id']}", index=word_count_options.index(global_length))
+                    
+                    if is_selected:
+                        full_q_text = q['text']
+                        if 'sub_questions' in q and q['sub_questions']:
+                            full_q_text += " (Include sub-parts: " + ", ".join(q['sub_questions']) + ")"
+                        selected_questions.append({"question": full_q_text, "length": length})
 
     if st.button("🚀 Generate Detailed Answers") and selected_questions:
         st.divider()
