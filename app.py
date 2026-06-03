@@ -98,8 +98,15 @@ if uploaded_file:
         st.error("Could not extract any meaningful text from the document.")
         st.stop()
 
+    # NEW: Allow user to review/edit OCR text
+    with st.expander("🔍 View/Edit Extracted Text", expanded=False):
+        st.info("The AI will use the text below to find questions. You can manually fix OCR errors here.")
+        text = st.text_area("Extracted Content", value=text, height=300)
+        st.session_state.extracted_text = text # Update session state with edits
+        st.caption(f"Character Count: {len(text)}")
+
     # Step 1: Identify Questions
-    if "questions" not in st.session_state:
+    if "questions" not in st.session_state or st.button("🔄 Re-scan for Questions"):
         with st.spinner("Extracting questions from text..."):
             prompt = f"Identify every individual question or prompt in the following exam text. List them as a numbered list. Include the section names if applicable.\n\nTEXT:\n{text}"
             try:
@@ -109,6 +116,8 @@ if uploaded_file:
                 st.session_state.questions = q_list
             except Exception as e:
                 st.error(f"AI Error: {e}")
+                if "500" in str(e) or "quota" in str(e).lower():
+                    st.warning("💡 **Tip:** It looks like this model is busy or out of quota. Try selecting a different model from the sidebar (e.g., Gemini 3.5 or 1.5).")
                 st.stop()
 
     st.subheader("📋 Select Questions to Answer")
